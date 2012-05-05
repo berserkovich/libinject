@@ -65,8 +65,7 @@ static bool createInjectionBuffer( const std::vector<wchar_t>& _libToInject, std
     size_t padSize = (4 - (codeBufferSize % 4));
     size_t dataOffset = codeBufferSize + padSize;
     _injectionBuffer->resize(codeBufferSize + padSize + sizeof(x86TemplateBufferData) + _libToInject.size() * sizeof(wchar_t));
-    unsigned char* bufferWriteMarker = &((*_injectionBuffer)[0]);
-    bufferWriteMarker = std::copy(&(x86TemplateBuffer[0]), &(x86TemplateBuffer[0]) + codeBufferSize, bufferWriteMarker);
+    std::vector<unsigned char>::iterator bufferWriteMarker = std::copy(&(x86TemplateBuffer[0]), &(x86TemplateBuffer[0]) + codeBufferSize, _injectionBuffer->begin());
     std::fill(bufferWriteMarker, bufferWriteMarker + padSize, 0xCC);    // pad data with INT3s
     bufferWriteMarker = std::copy(&(x86TemplateBufferData[0]), &(x86TemplateBufferData[0]) + sizeof(x86TemplateBufferData), bufferWriteMarker + padSize);
     std::copy(reinterpret_cast<const unsigned char*>(&(_libToInject[0])), reinterpret_cast<const unsigned char*>(&(_libToInject[0]) + _libToInject.size()), bufferWriteMarker);
@@ -157,7 +156,7 @@ int LIBINJECT_Inject( LIBINJECT_PROCESS _processHandle, const char* _libToInject
     } while( Thread32Next(hThreadSnap, &te32) );
 
     ::CloseHandle(hThreadSnap);
-    hThreadSnap == INVALID_HANDLE_VALUE;
+    hThreadSnap = INVALID_HANDLE_VALUE;
 
     ::DebugActiveProcessStop(pid);
     attached = FALSE;

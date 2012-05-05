@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 2.4)
 project(libinject)
 
+option(LIBINJECT_SHARED "build dll/so" OFF)
 option(LIBINJECT_BUILD_SAMPLES "build samples" ON)
 
 set(libinject_src
@@ -14,8 +15,14 @@ if( WIN32 )
   )
 endif()
 
+set( LIBINJECT_LIB_MODE )
+if( LIBINJECT_SHARED )
+	add_definitions(-DLIBINJECT_SHARED_BUILD)
+	set( LIBINJECT_LIB_MODE SHARED )
+endif()
+
 include_directories(include)
-add_library(libinject ${libinject_src})
+add_library(libinject ${LIBINJECT_LIB_MODE} ${libinject_src})
 set_target_properties(libinject PROPERTIES PREFIX "")
 
 if( LIBINJECT_BUILD_SAMPLES )
