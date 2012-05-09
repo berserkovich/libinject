@@ -4,12 +4,22 @@ static const unsigned char x86TemplateBuffer[] =
     0x00, 0x00, 0x00, 0x00,             // data offset
 
     // code
+    0x60,                               // push add                         ; save all registers 
+    0x9C,                               // pushfd                           ; save flags
+
     0x33, 0xC0,                         // xor eax, eax                     ; clear eax
     0x3C, 0x01,                         // cmp al, 1                        ; change to 0 for debugging
     0x75, 0x02,                         // jne 2                            ; jump over next instruction
     0xEB, 0xFE,                         // jmp eip                          ; infinite loop for debugging
 
-    0x83, 0xEA, 0x04,                   // sub edx, 0x04                    ; get pointer to data offset
+    0xE8, 0x02, 0x00, 0x00, 0x00,       // call get_eip                     ; mov next code line address to edx 
+    0xEB, 0x04,                         // jmp get_eip_end                  ; jump over get_eip routine
+    // get_eip:
+    0x8B, 0x14, 0x24,                   // mov edx, [esp]                   ; [esp] has eip
+    0xC3,                               // ret                              ; return
+    // get_eip_end
+
+    0x83, 0xEA, 0x13,                   // sub edx, 0x13                    ; get pointer to data offset
     0x03, 0x12,                         // add edx, [edx]                   ; get pointer to data
     0x52,                               // push edx                         ; save pointer to data on stack
 
@@ -114,17 +124,11 @@ static const unsigned char x86TemplateBuffer[] =
     0x83, 0xC2, 0x3C,                   // add edx, 3Ch                     ; get pointer to injected dll name
     0x52,                               // push edx                         ; push injected dll name address into stack
     0xFF, 0xD0,                         // call eax                         ; Call LoadLibraryW
-    0x83, 0xF8, 0x00,                   // cmp eax, 0
-    0x75, 0x0A,                         // JNZ EIP + 0x0A                   ; to skip over eror code
-    0x8B, 0x14, 0x24,                   // mov edx, [esp]                   ; get data offset from stack
-    0x8B, 0x42, 0x0C,                   // mov eax, [edx + 0x0C]            ; Move the address of ExitThread into EAX
-    0x6A, 0x01,                         // push 1                           ; exit code
-    0xFF, 0xD0,                         // call eax                         ; Call ExitThread
-    // Exiting from the injected dll.
-    0x8B, 0x14, 0x24,                   // mov edx, [esp]                   ; get data offset from stack
-    0x8B, 0x42, 0x0C,                   // mov eax, [edx + 0x0C]            ; Move the address of ExitThread into EAX
-    0x6A, 0x00,                         // push 0                           ; exit code
-    0xFF, 0xD0,                         // call eax                         ; Call ExitThread
+
+    0x9D,                                 // popfd                            ; pop flags
+    0x61,                                 // popad                            ; pop registers
+    0xEB, 0xFE,                           // jmp eip                          ; infinite loop for signaling end of routine
+    
 };
 
 static const unsigned char x86TemplateBufferData[] = 
