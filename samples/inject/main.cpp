@@ -13,34 +13,52 @@
     }
 #endif
 
+bool check_result( int _result )
+{
+    if( _result == LIBINJECT_INVALID_PARAM )
+    {
+        std::printf("Injection failed: invalid parameters\n");
+        return false;
+    }
+    else if( _result == LIBINJECT_ERROR )
+    {
+        std::printf("Injection failed: injection error\n");
+        return false;
+    }
+    else if( _result == LIBINJECT_OK )
+    {
+        std::printf("Injection succeeded\n");
+        return true;
+    }
+    return true;
+ }
+
 int main( int _argc, char* _argv[] )
 {
-    if( _argc > 1 )
+    //__asm
+    //{
+    //    pushad
+    //    popad
+    //}
+    if( _argc > 2 )
     {
         if( std::strcmp(_argv[1], "-pid") == 0 )
         {
             long pid = std::atol(_argv[2]);
             LIBINJECT_PROCESS hProcess = PidToHandle(pid);
-            for( int i = 0; i < (_argc - 3); ++i )
-            {
-                LIBINJECT_Inject(hProcess, _argv[i + 3]);
-            }
+            int result = LIBINJECT_Inject(hProcess, _argv[3]);
+            return check_result(result) ? EXIT_SUCCESS : EXIT_FAILURE;
         }
         else
         {
-            std::vector<const char*> libsToInject(_argc);
-            for( int i = 0; i < (_argc - 1); ++i )
-            {
-                libsToInject[i] = _argv[i + 2];
-            }
-            int result = LIBINJECT_StartInjected(_argv[1], NULL, &(libsToInject[0]), NULL);
-            return (result == LIBINJECT_OK) ? EXIT_SUCCESS : EXIT_FAILURE;
+            int result = LIBINJECT_StartInjected(_argv[1], NULL, _argv[2], NULL);
+            return check_result(result) ? EXIT_SUCCESS : EXIT_FAILURE;
         }
     }
     else
     {
-        std::printf("inject <commandline> [libToInject ...]\n"
-                    "inject -pid <pid> [libToInject ...]\n");
+        std::printf("inject <commandline> <libToInject>\n"
+                    "inject -pid <pid> <libToInject>\n");
     }
     return EXIT_SUCCESS;
 }

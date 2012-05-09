@@ -37,7 +37,7 @@ typedef HANDLE LIBINJECT_PROCESS;
 
 extern LIBINJECT_EXPORT int LIBINJECT_Inject( LIBINJECT_PROCESS _processHandle, const char* _libToInjectUtf8 );
 
-extern LIBINJECT_EXPORT int LIBINJECT_StartInjected( const char* _commandlineUtf8, const char* _workingDirectoryUtf8, const char* const* _libsToInjectUtf8, LIBINJECT_PROCESS* _processHandle );
+extern LIBINJECT_EXPORT int LIBINJECT_StartInjected( const char* _commandlineUtf8, const char* _workingDirectoryUtf8, const char* _libToInjectUtf8, LIBINJECT_PROCESS* _processHandle );
 
 
 #ifdef __cplusplus
