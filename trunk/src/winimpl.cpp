@@ -415,17 +415,8 @@ int LIBINJECT_StartInjected( const char* _commandlineUtf8, const char* _workingD
 
     do
     {
-        if( ::SuspendThread(processInfo.hThread) == (DWORD)-1 )
-        {
-            error = LIBINJECT_ERROR;
-            goto exit_label;
-        }
-        if( ::GetThreadContext(processInfo.hThread, &threadContext) == FALSE )
-        {
-            error = LIBINJECT_ERROR;
-            goto exit_label;
-        }
-        if( ::ResumeThread(processInfo.hThread) == (DWORD)-1 )
+        if( ::GetThreadContext(processInfo.hThread, &threadContext) == FALSE 
+			&& GetLastError() != ERROR_GEN_FAILURE )
         {
             error = LIBINJECT_ERROR;
             goto exit_label;
