@@ -4,7 +4,7 @@ static const unsigned char x86TemplateBuffer[] =
     0x00, 0x00, 0x00, 0x00,             // data offset
 
     // code
-    0x60,                               // push add                         ; save all registers 
+    0x60,                               // pushad                           ; save all registers 
     0x9C,                               // pushfd                           ; save flags
 
     0x33, 0xC0,                         // xor eax, eax                     ; clear eax
