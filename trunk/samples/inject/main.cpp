@@ -35,11 +35,6 @@ bool check_result( int _result )
 
 int main( int _argc, char* _argv[] )
 {
-    //__asm
-    //{
-    //    pushad
-    //    popad
-    //}
     if( _argc > 2 )
     {
         if( std::strcmp(_argv[1], "-pid") == 0 )

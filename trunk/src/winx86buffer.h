@@ -1,9 +1,8 @@
 
 static const unsigned char x86TemplateBuffer[] = 
 { 
-    0x00, 0x00, 0x00, 0x00,             // data offset
+    0xEB, 0xFE,                         // jmp eip                          ; infinite loop for signaling of begining of routine
 
-    // code
     0x60,                               // pushad                           ; save all registers 
     0x9C,                               // pushfd                           ; save flags
 
@@ -11,17 +10,6 @@ static const unsigned char x86TemplateBuffer[] =
     0x3C, 0x01,                         // cmp al, 1                        ; change to 0 for debugging
     0x75, 0x02,                         // jne 2                            ; jump over next instruction
     0xEB, 0xFE,                         // jmp eip                          ; infinite loop for debugging
-
-    0xE8, 0x02, 0x00, 0x00, 0x00,       // call get_eip                     ; mov next code line address to edx 
-    0xEB, 0x04,                         // jmp get_eip_end                  ; jump over get_eip routine
-    // get_eip:
-    0x8B, 0x14, 0x24,                   // mov edx, [esp]                   ; [esp] has eip
-    0xC3,                               // ret                              ; return
-    // get_eip_end
-
-    0x83, 0xEA, 0x13,                   // sub edx, 0x13                    ; get pointer to data offset
-    0x03, 0x12,                         // add edx, [edx]                   ; get pointer to data
-    0x52,                               // push edx                         ; save pointer to data on stack
 
     0xFC,                               // cld		                        ; clear the direction flag for the loop
     0x33, 0xD2,                         // xor edx, edx
@@ -48,8 +36,7 @@ static const unsigned char x86TemplateBuffer[] =
     0x8B, 0x12,                         // mov edx, [edx]                   ; get the next module
     0x75, 0xDB,                         // jne next_mod                     ; if it doesn't match, process the next module
     0x8B, 0xC3,                         // mov eax, ebx                     ; store result in eax
-    0x8B, 0x14, 0x24,                   // mov edx, [esp]                   ; get data offset from stack
-    0x89, 0x02,                         // mov [edx], eax                   ; save kernel32.dll address to our variable
+	0x89, 0x45, 0x00,					// mov [ebp], eax					; save kernel32.dll address to our variable
     0xEB, 0x4C,                         // jmp find_function_end
 
     // find_function_address:
@@ -95,39 +82,40 @@ static const unsigned char x86TemplateBuffer[] =
     0x50,                               // push eax                         ; kernel32Addr in EAX
     0x68, 0xA4, 0x4E, 0x0E, 0xEC,       // push 0xEC0E4EA4                  ; LoadLibraryW hash
     0xE8, 0xA9, 0xFF, 0xFF, 0xFF,       // call find_function_address
-    0x83, 0xC4, 0x04,                   // add esp, 0x04                    ; restore stack
-    0x8B, 0x54, 0x24, 0x04,             // mov edx, [esp + 4]               ; get data offset from stack
-    0x89, 0x42, 0x04,                   // mov [edx + 4], eax               ; save LoadLibraryW address to our variable
-
-    // Get GetProcAddress address
-    0x68, 0xAA, 0xFC, 0x0D, 0x7C,       // push 0x7C0DFCAA                  ; GetProcAddress hash
-    0xE8, 0x95, 0xFF, 0xFF, 0xFF,       // call find_function_address
+	0x89, 0x45, 0x04,					// mov [ebp + 4], eax				; save LoadLibraryW address to our variable
     0x83, 0xC4, 0x08,                   // add esp, 0x08                    ; restore stack
-    0x8B, 0x14, 0x24,                   // mov edx, [esp]                   ; get data offset from stack
-    0x89, 0x42, 0x08,                   // mov [edx + 8], eax               ; save GetProcAddress address to our variable
-    // Get ExitThread address
-    0x8B, 0x42, 0x04,                   // mov eax, [edx + 4]               ; Move the address of LoadLibraryW into EAX
-    0x83, 0xC2, 0x20,                   // add edx, 20h                     ; get pointer to L'kernel32.dll'
-    0x52,                               // push edx                         ; Push the address of the DLL name to use in LoadLibraryW
-    0xFF, 0xD0,                         // call eax                         ; Call LoadLibraryW
-    0x8B, 0x14, 0x24,                   // mov edx, [esp]                   ; get data offset from stack
-    0x83, 0xC2, 0x14,                   // add edx, 14h                     ; get pointer to 'ExitThread'
-    0x52,                               // push edx                         ; push 'ExitThread' address
-    0x50,                               // push eax                         ; module to use in GetProcAddress
-    0x8B, 0x54, 0x24, 0x08,             // mov edx, [esp + 8]               ; get data offset from stack
-    0x8B, 0x42, 0x08,                   // mov eax, [edx + 8]               ; Move the address of GetProcAddress into EAX
-    0xFF, 0xD0,                         // call eax                         ; Call GetProcAddress
-    0x8B, 0x14, 0x24,                   // mov edx, [esp]                   ; get data offset from stack
-    0x89, 0x42, 0x0C,                   // mov [edx + 0x0C], eax            ; save ExitThread address to our variable
-    // Injected dll loading.
-    0x8B, 0x42, 0x04,                   // mov eax, [edx + 4]               ; Move the address of LoadLibraryW into EAX
+
+    //// Get GetProcAddress address
+    //0x68, 0xAA, 0xFC, 0x0D, 0x7C,       // push 0x7C0DFCAA                  ; GetProcAddress hash
+    //0xE8, 0x95, 0xFF, 0xFF, 0xFF,       // call find_function_address
+    //0x83, 0xC4, 0x08,                   // add esp, 0x08                    ; restore stack
+    //0x8B, 0x14, 0x24,                   // mov edx, [esp]                   ; get data offset from stack
+    //0x89, 0x42, 0x08,                   // mov [edx + 8], eax               ; save GetProcAddress address to our variable
+    //// Get ExitThread address
+    //0x8B, 0x42, 0x04,                   // mov eax, [edx + 4]               ; Move the address of LoadLibraryW into EAX
+    //0x83, 0xC2, 0x20,                   // add edx, 20h                     ; get pointer to L'kernel32.dll'
+    //0x52,                               // push edx                         ; Push the address of the DLL name to use in LoadLibraryW
+    //0xFF, 0xD0,                         // call eax                         ; Call LoadLibraryW
+    //0x8B, 0x14, 0x24,                   // mov edx, [esp]                   ; get data offset from stack
+    //0x83, 0xC2, 0x14,                   // add edx, 14h                     ; get pointer to 'ExitThread'
+    //0x52,                               // push edx                         ; push 'ExitThread' address
+    //0x50,                               // push eax                         ; module to use in GetProcAddress
+    //0x8B, 0x54, 0x24, 0x08,             // mov edx, [esp + 8]               ; get data offset from stack
+    //0x8B, 0x42, 0x08,                   // mov eax, [edx + 8]               ; Move the address of GetProcAddress into EAX
+    //0xFF, 0xD0,                         // call eax                         ; Call GetProcAddress
+    //0x8B, 0x14, 0x24,                   // mov edx, [esp]                   ; get data offset from stack
+    //0x89, 0x42, 0x0C,                   // mov [edx + 0x0C], eax            ; save ExitThread address to our variable
+
+    //// Injected dll loading.
+    0x8B, 0x45, 0x04,                   // mov eax, [ebp + 4]               ; Move the address of LoadLibraryW into EAX
+	0x8B, 0xD5,							// mov edx, ebp
     0x83, 0xC2, 0x3C,                   // add edx, 3Ch                     ; get pointer to injected dll name
     0x52,                               // push edx                         ; push injected dll name address into stack
     0xFF, 0xD0,                         // call eax                         ; Call LoadLibraryW
 
-    0x9D,                                 // popfd                            ; pop flags
-    0x61,                                 // popad                            ; pop registers
-    0xEB, 0xFE,                           // jmp eip                          ; infinite loop for signaling end of routine
+    0x9D,                               // popfd                            ; pop flags
+    0x61,                               // popad                            ; pop registers
+    0xEB, 0xFE,                         // jmp eip                          ; infinite loop for signaling end of routine
     
 };
 

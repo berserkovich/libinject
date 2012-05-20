@@ -11,6 +11,16 @@
 
 typedef BOOL (WINAPI *LPFN_ISWOW64PROCESS) (HANDLE, PBOOL);
 
+struct InjectionBufferInfo
+{
+    unsigned char* codeBlock;
+	unsigned char* codeBlockBeginTrapInstructionAddress;
+	unsigned char* codeBlockTrapBodyInstructionAddress;
+    unsigned char* codeBlockEndTrapInstructionAddress;
+	unsigned char* dataBlock;
+	unsigned char* dataBlockStackAddress;
+};
+
 static bool utf8_to_ucs2( const char* _utf8string, std::vector<wchar_t>* _ucs2string )
 {
     assert(_utf8string);
@@ -58,23 +68,88 @@ static bool utf8_to_ucs2( const char* _utf8string, std::vector<wchar_t>* _ucs2st
     return true;
 }
 
-static bool createInjectionBuffer( const std::vector<wchar_t>& _libToInject, std::vector<unsigned char>* _injectionBuffer, DWORD* _endInstructionOffset )
+static void releaseInjectionBuffer( HANDLE _hProcess, const InjectionBufferInfo& _bufferInfo )
 {
-    assert(_injectionBuffer);
-    assert(_libToInject.empty() == false);
-    assert(_endInstructionOffset);
+	if( _bufferInfo.dataBlock != NULL )
+	{
+		::VirtualFreeEx(_hProcess, _bufferInfo.dataBlock, 0, MEM_RELEASE);
+	}
 
-    size_t codeBufferSize = sizeof(x86TemplateBuffer);
-    size_t padSize = (4 - (codeBufferSize % 4));
-    size_t dataOffset = codeBufferSize + padSize;
-    *_endInstructionOffset = static_cast<DWORD>(codeBufferSize - 2);
-    _injectionBuffer->resize(codeBufferSize + padSize + sizeof(x86TemplateBufferData) + _libToInject.size() * sizeof(wchar_t) + 4);
-    std::vector<unsigned char>::iterator bufferWriteMarker = std::copy(&(x86TemplateBuffer[0]), &(x86TemplateBuffer[0]) + codeBufferSize, _injectionBuffer->begin());
-    std::fill(bufferWriteMarker, bufferWriteMarker + padSize, 0xCC);    // pad data with INT3s
-    bufferWriteMarker = std::copy(&(x86TemplateBufferData[0]), &(x86TemplateBufferData[0]) + sizeof(x86TemplateBufferData), bufferWriteMarker + padSize);
-    std::copy(reinterpret_cast<const unsigned char*>(&(_libToInject[0])), reinterpret_cast<const unsigned char*>(&(_libToInject[0]) + _libToInject.size()), bufferWriteMarker);
-    std::copy(reinterpret_cast<unsigned char*>(&dataOffset), reinterpret_cast<unsigned char*>(&dataOffset) + 4, _injectionBuffer->begin());
-    return true;
+    if( _bufferInfo.codeBlock != NULL )
+    {
+        ::VirtualFreeEx(_hProcess, _bufferInfo.codeBlock, 0, MEM_RELEASE);
+    }
+}
+
+static int createInjectionBuffer( HANDLE _hProcess, const std::vector<wchar_t>& _libToInject, InjectionBufferInfo* _injectionBufferInfo )
+{
+    assert(_libToInject.empty() == false);
+    assert(_injectionBufferInfo);
+
+    size_t dataSize = sizeof(x86TemplateBufferData) + _libToInject.size() * sizeof(wchar_t);
+    size_t stackSize = 100 * 1024;  // 100K
+
+    InjectionBufferInfo bufferInfo = { NULL };
+
+    // allocate code buffer
+	bufferInfo.codeBlock = static_cast<unsigned char*>(::VirtualAllocEx(_hProcess, 0, sizeof(x86TemplateBuffer), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    if( bufferInfo.codeBlock == NULL )
+    {
+        return LIBINJECT_ERROR;
+    }
+
+    // copy code template into buffer
+    SIZE_T bytesWritten = 0;
+    if( ::WriteProcessMemory(_hProcess, bufferInfo.codeBlock, &(x86TemplateBuffer[0]), sizeof(x86TemplateBuffer), &bytesWritten) == FALSE 
+        || bytesWritten != sizeof(x86TemplateBuffer) )
+    {
+        releaseInjectionBuffer(_hProcess, bufferInfo);
+        return LIBINJECT_ERROR;
+    }
+
+	bufferInfo.dataBlock = static_cast<unsigned char*>(::VirtualAllocEx(_hProcess, 0, stackSize + dataSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+	if( bufferInfo.dataBlock == NULL )
+	{
+		releaseInjectionBuffer(_hProcess, bufferInfo);
+		return LIBINJECT_ERROR;
+	}
+
+	unsigned char* dataAddress = bufferInfo.dataBlock + stackSize;
+    if( ::WriteProcessMemory(_hProcess, dataAddress, &(x86TemplateBufferData[0]), sizeof(x86TemplateBufferData), &bytesWritten) == FALSE 
+        || bytesWritten != sizeof(x86TemplateBufferData) )
+    {
+        releaseInjectionBuffer(_hProcess, bufferInfo);
+        return LIBINJECT_ERROR;
+    }
+    dataAddress += bytesWritten;
+
+    if( ::WriteProcessMemory(_hProcess, dataAddress, reinterpret_cast<const unsigned char*>(&(_libToInject[0])), _libToInject.size() * sizeof(wchar_t), &bytesWritten) == FALSE 
+        || bytesWritten != (_libToInject.size() * sizeof(wchar_t)) )
+    {
+        releaseInjectionBuffer(_hProcess, bufferInfo);
+        return LIBINJECT_ERROR;
+    }
+
+	// set code block protection to execute-readonly
+    DWORD oldProtection = 0;
+    if( ::VirtualProtectEx(_hProcess, bufferInfo.codeBlock, sizeof(x86TemplateBuffer), PAGE_EXECUTE_READ, &oldProtection) == FALSE )
+    {
+        releaseInjectionBuffer(_hProcess, bufferInfo);
+        return LIBINJECT_ERROR;
+    }
+
+    if( ::FlushInstructionCache(_hProcess, bufferInfo.codeBlock, sizeof(x86TemplateBuffer)) == FALSE )
+    {
+        releaseInjectionBuffer(_hProcess, bufferInfo);
+        return LIBINJECT_ERROR;
+    }
+
+	bufferInfo.codeBlockBeginTrapInstructionAddress = bufferInfo.codeBlock;
+	bufferInfo.codeBlockTrapBodyInstructionAddress = bufferInfo.codeBlock + 2;
+	bufferInfo.codeBlockEndTrapInstructionAddress = bufferInfo.codeBlock + sizeof(x86TemplateBuffer) - 2;
+	bufferInfo.dataBlockStackAddress = bufferInfo.dataBlock + stackSize;
+    *_injectionBufferInfo = bufferInfo;
+    return LIBINJECT_OK;
 }
 
 int LIBINJECT_Inject( LIBINJECT_PROCESS _processHandle, const char* _libToInjectUtf8 )
@@ -88,11 +163,9 @@ int LIBINJECT_Inject( LIBINJECT_PROCESS _processHandle, const char* _libToInject
     std::vector<HANDLE> threads;
     std::vector<wchar_t> libToInject;
     std::vector<wchar_t> libToInjectFullpath;
-    std::vector<unsigned char> injectionBuffer;
-    void* codecaveAddress = NULL;
-    void* codecaveExecAddress = NULL;
-    CONTEXT threadContext = { CONTEXT_ALL, 0 };
-    CONTEXT currentContext = { CONTEXT_FULL, 0 };
+    InjectionBufferInfo injectionBuffer = { NULL };
+    CONTEXT threadContext = { CONTEXT_CONTROL, 0 };
+    CONTEXT currentContext = { CONTEXT_CONTROL, 0 };
 
     if( _libToInjectUtf8 == NULL )
     {
@@ -156,15 +229,23 @@ int LIBINJECT_Inject( LIBINJECT_PROCESS _processHandle, const char* _libToInject
                 error = LIBINJECT_ERROR;
                 goto exit_label;
             }
+            if( ::SuspendThread(hThread) == (DWORD)-1 )
+			{
+				error = LIBINJECT_ERROR;
+				goto exit_label;
+			}
             threads.push_back(hThread);
-            ::SuspendThread(hThread);
         }
     } while( Thread32Next(hThreadSnap, &te32) );
 
     ::CloseHandle(hThreadSnap);
     hThreadSnap = INVALID_HANDLE_VALUE;
 
-    ::DebugActiveProcessStop(pid);
+    if( ::DebugActiveProcessStop(pid) == FALSE )
+	{
+		error = LIBINJECT_ERROR;
+		goto exit_label;
+	}
     attached = FALSE;
 
     if( threads.empty() != false )
@@ -173,37 +254,12 @@ int LIBINJECT_Inject( LIBINJECT_PROCESS _processHandle, const char* _libToInject
         goto exit_label;
     }
 
-    DWORD endInstructionOffset = 0;
-    if( createInjectionBuffer(libToInjectFullpath, &injectionBuffer, &endInstructionOffset) == false )
+    error = createInjectionBuffer(_processHandle, libToInjectFullpath, &injectionBuffer);
+    if( error != LIBINJECT_OK )
     {
-        error = LIBINJECT_ERROR;
         goto exit_label;
     }
 
-    codecaveAddress = ::VirtualAllocEx(_processHandle, 0, injectionBuffer.size(), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-    if( codecaveAddress == NULL )
-    {
-        error = LIBINJECT_ERROR;
-        goto exit_label;
-    }
-
-	DWORD oldProtect = 0;	
-	::VirtualProtectEx(_processHandle, codecaveAddress, injectionBuffer.size(), PAGE_EXECUTE_READWRITE, &oldProtect);
-
-    SIZE_T bytesWritten = 0;
-    bool codeInjected = (::WriteProcessMemory(_processHandle, codecaveAddress, &(injectionBuffer[0]), injectionBuffer.size(), &bytesWritten) != FALSE);
-
-	::VirtualProtectEx(_processHandle, codecaveAddress, injectionBuffer.size(), oldProtect, &oldProtect);
-
-	codeInjected = codeInjected && (::FlushInstructionCache(_processHandle, codecaveAddress, injectionBuffer.size()) != FALSE);
-
-    if( codeInjected == false )
-    {
-        error = LIBINJECT_ERROR;
-        goto exit_label;
-    }
-
-    codecaveExecAddress = reinterpret_cast<unsigned char*>(codecaveAddress) + 4;
     HANDLE hThread = threads[0];
     if( ::GetThreadContext(hThread, &threadContext) == FALSE )
     {
@@ -211,8 +267,13 @@ int LIBINJECT_Inject( LIBINJECT_PROCESS _processHandle, const char* _libToInject
         goto exit_label;
     }
     
-    DWORD originalEntryPoint = threadContext.Eip;
-    threadContext.Eip = (DWORD)codecaveExecAddress;
+	DWORD originalEntryPoint = threadContext.Eip;
+	DWORD originalEsp = threadContext.Esp;
+	DWORD originalEbp = threadContext.Ebp;
+	threadContext.Eip = (DWORD)injectionBuffer.codeBlockTrapBodyInstructionAddress;	// we can skip begin trap as stack can be set now
+	threadContext.Esp = (DWORD)injectionBuffer.dataBlockStackAddress;
+	threadContext.Ebp = (DWORD)injectionBuffer.dataBlockStackAddress;
+
     if( ::SetThreadContext(hThread, &threadContext) == FALSE )
     {
         error = LIBINJECT_ERROR;
@@ -227,64 +288,38 @@ int LIBINJECT_Inject( LIBINJECT_PROCESS _processHandle, const char* _libToInject
 
     do
     {
-        if( ::SuspendThread(hThread) == (DWORD)-1 )
+        if( ::GetThreadContext(hThread, &currentContext) == FALSE 
+			&& GetLastError() != ERROR_GEN_FAILURE )
         {
             error = LIBINJECT_ERROR;
             goto exit_label;
         }
-        if( ::GetThreadContext(hThread, &currentContext) == FALSE )
-        {
-            error = LIBINJECT_ERROR;
-            goto exit_label;
-        }
-        if( ::ResumeThread(hThread) == (DWORD)-1 )
-        {
-            error = LIBINJECT_ERROR;
-            goto exit_label;
-        }
-    }while( currentContext.Eip != (endInstructionOffset + (DWORD)codecaveAddress) );
+	}while( currentContext.Eip != ((DWORD)injectionBuffer.codeBlockEndTrapInstructionAddress) );
 
     if( ::SuspendThread(hThread) == (DWORD)-1 )
     {
         error = LIBINJECT_ERROR;
         goto exit_label;
     }
+
+    if( ::GetThreadContext(hThread, &currentContext) == FALSE )
+    {
+        error = LIBINJECT_ERROR;
+        goto exit_label;
+    }
+
     threadContext.Eip = originalEntryPoint;
+	threadContext.Ebp = originalEbp;
+	threadContext.Esp = originalEsp;
     if( ::SetThreadContext(hThread, &threadContext) == FALSE )
     {
         error = LIBINJECT_ERROR;
         goto exit_label;
     }
-    //if( ::ResumeThread(hThread) == (DWORD)-1 )
-    //{
-    //    error = LIBINJECT_ERROR;
-    //    goto exit_label;
-    //}
-
-    /*
-	HANDLE hThread = ::CreateRemoteThread(_processHandle, NULL, 0, (LPTHREAD_START_ROUTINE)(codecaveExecAddress), 0, 0, NULL);
-    if( hThread == NULL )
-    {
-        error = LIBINJECT_ERROR;
-        goto exit_label;
-    }
-	::WaitForSingleObject(hThread, INFINITE); 
-	DWORD threadExitCode = 1;
-	::GetExitCodeThread(hThread, &threadExitCode);
-    ::CloseHandle(hThread);
-    if( threadExitCode != 0 )
-    {
-        error = LIBINJECT_ERROR;
-        goto exit_label;
-    }
-    */
-
+	::ResumeThread(hThread);
 
 exit_label:
-    if( codecaveAddress != NULL )
-    {
-        ::VirtualFreeEx(_processHandle, codecaveAddress, 0, MEM_RELEASE);
-    }
+    releaseInjectionBuffer(_processHandle, injectionBuffer);
 
     if( attached != FALSE )
     {
@@ -343,8 +378,7 @@ int LIBINJECT_StartInjected( const char* _commandlineUtf8, const char* _workingD
     std::vector<wchar_t> libToInjectFullpath(fullnameLength);
     ::GetFullPathNameW(&(libToInject[0]), libToInjectFullpath.size(), &(libToInjectFullpath[0]), NULL);
 
-    LPFN_ISWOW64PROCESS fnIsWow64Process = (LPFN_ISWOW64PROCESS)::GetProcAddress(::GetModuleHandleW(L"kernel32"), "IsWow64Process");
-
+    //LPFN_ISWOW64PROCESS fnIsWow64Process = (LPFN_ISWOW64PROCESS)::GetProcAddress(::GetModuleHandleW(L"kernel32"), "IsWow64Process");
 
     int error = LIBINJECT_OK;
     STARTUPINFOW startupInfo;
@@ -357,50 +391,21 @@ int LIBINJECT_StartInjected( const char* _commandlineUtf8, const char* _workingD
         return LIBINJECT_ERROR;
     }
 
-    CONTEXT threadContext = { CONTEXT_FULL, 0 };
+	CONTEXT threadContext = { CONTEXT_CONTROL | CONTEXT_INTEGER, 0 };
     if( ::GetThreadContext(processInfo.hThread, &threadContext) == FALSE )
     {
         return LIBINJECT_ERROR;
     }
 
-    std::vector<unsigned char> injectionBuffer;
-    void* codecaveAddress = NULL;
-    void* codecaveExecAddress = NULL;
-
-    DWORD endInstructionOffset = 0;
-    if( createInjectionBuffer(libToInjectFullpath, &injectionBuffer, &endInstructionOffset) == false )
+    InjectionBufferInfo injectionBuffer = { NULL };
+    error = createInjectionBuffer(processInfo.hProcess, libToInjectFullpath, &injectionBuffer);
+    if( error != LIBINJECT_OK )
     {
-        error = LIBINJECT_ERROR;
         goto exit_label;
     }
-
-    codecaveAddress = ::VirtualAllocEx(processInfo.hProcess, 0, injectionBuffer.size(), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-    if( codecaveAddress == NULL )
-    {
-        error = LIBINJECT_ERROR;
-        goto exit_label;
-    }
-
-	DWORD oldProtect = 0;	
-	::VirtualProtectEx(processInfo.hProcess, codecaveAddress, injectionBuffer.size(), PAGE_EXECUTE_READWRITE, &oldProtect);
-
-    SIZE_T bytesWritten = 0;
-    bool codeInjected = (::WriteProcessMemory(processInfo.hProcess, codecaveAddress, &(injectionBuffer[0]), injectionBuffer.size(), &bytesWritten) != FALSE);
-
-	::VirtualProtectEx(processInfo.hProcess, codecaveAddress, injectionBuffer.size(), oldProtect, &oldProtect);
-
-	codeInjected = codeInjected && (::FlushInstructionCache(processInfo.hProcess, codecaveAddress, injectionBuffer.size()) != FALSE);
-
-    if( codeInjected == false )
-    {
-        error = LIBINJECT_ERROR;
-        goto exit_label;
-    }
-
-    codecaveExecAddress = reinterpret_cast<unsigned char*>(codecaveAddress) + 4;
 
     DWORD originalEntryPoint = threadContext.Eax;
-    threadContext.Eax = (DWORD)codecaveExecAddress;
+    threadContext.Eax = (DWORD)injectionBuffer.codeBlock;
     if( ::SetThreadContext(processInfo.hThread, &threadContext) == FALSE )
     {
         error = LIBINJECT_ERROR;
@@ -421,14 +426,50 @@ int LIBINJECT_StartInjected( const char* _commandlineUtf8, const char* _workingD
             error = LIBINJECT_ERROR;
             goto exit_label;
         }
-    }while( threadContext.Eip != (endInstructionOffset + (DWORD)codecaveAddress) );
+	}while( threadContext.Eip != ((DWORD)injectionBuffer.codeBlockBeginTrapInstructionAddress) );
 
     if( ::SuspendThread(processInfo.hThread) == (DWORD)-1 )
     {
         error = LIBINJECT_ERROR;
         goto exit_label;
     }
+
+	DWORD originalEsp = threadContext.Esp;
+	DWORD originalEbp = threadContext.Ebp;
+	threadContext.Eip = (DWORD)injectionBuffer.codeBlockTrapBodyInstructionAddress;
+	threadContext.Ebp = (DWORD)injectionBuffer.dataBlockStackAddress;
+	threadContext.Esp = (DWORD)injectionBuffer.dataBlockStackAddress;
+
+    if( ::SetThreadContext(processInfo.hThread, &threadContext) == FALSE )
+    {
+        error = LIBINJECT_ERROR;
+        goto exit_label;
+    }
+    if( ::ResumeThread(processInfo.hThread) == (DWORD)-1 )
+    {
+        error = LIBINJECT_ERROR;
+        goto exit_label;
+    }
+
+    do
+    {
+        if( ::GetThreadContext(processInfo.hThread, &threadContext) == FALSE 
+			&& GetLastError() != ERROR_GEN_FAILURE )
+        {
+            error = LIBINJECT_ERROR;
+            goto exit_label;
+        }
+	}while( threadContext.Eip != ((DWORD)injectionBuffer.codeBlockEndTrapInstructionAddress) );
+
+    if( ::SuspendThread(processInfo.hThread) == (DWORD)-1 )
+    {
+        error = LIBINJECT_ERROR;
+        goto exit_label;
+    }
+
     threadContext.Eip = originalEntryPoint;
+    threadContext.Esp = originalEsp;
+	threadContext.Ebp = originalEbp;
     if( ::SetThreadContext(processInfo.hThread, &threadContext) == FALSE )
     {
         error = LIBINJECT_ERROR;
@@ -441,9 +482,9 @@ int LIBINJECT_StartInjected( const char* _commandlineUtf8, const char* _workingD
     }
 
 exit_label:
-    if( codecaveAddress != NULL )
+    if( processInfo.hProcess != NULL )
     {
-        ::VirtualFreeEx(processInfo.hProcess, codecaveAddress, 0, MEM_RELEASE);
+        releaseInjectionBuffer(processInfo.hProcess, injectionBuffer);
     }
 
     if( processInfo.hThread != NULL )
