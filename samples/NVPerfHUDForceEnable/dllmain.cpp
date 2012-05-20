@@ -101,8 +101,7 @@ BOOL WINAPI DllMain( HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved )
 {
     if( fdwReason == DLL_PROCESS_ATTACH )
     {
-        //::MessageBoxA(NULL, "Attach", "inject", MB_OK);
-        if( MH_Initialize() != MH_OK )
+		if( MH_Initialize() != MH_OK )
         {
             return FALSE;
         }
