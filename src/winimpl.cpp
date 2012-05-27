@@ -2,12 +2,14 @@
 
 #include "winx86buffer.h"
 
-#include <TlHelp32.h>
-
 #include <algorithm> 
 #include <cassert>
 #include <cstring>
 #include <vector>
+
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#include <TlHelp32.h>
 
 typedef BOOL (WINAPI *LPFN_ISWOW64PROCESS) (HANDLE, PBOOL);
 
@@ -152,43 +154,91 @@ static int createInjectionBuffer( HANDLE _hProcess, const std::vector<wchar_t>& 
     return LIBINJECT_OK;
 }
 
-int LIBINJECT_Inject( LIBINJECT_PROCESS _processHandle, const char* _libToInjectUtf8 )
+static HANDLE IsProcessCreatedSuspended( HANDLE _hProcess )
 {
-    int error = LIBINJECT_OK;
-    DWORD pid = ::GetProcessId(_processHandle);
+	FILETIME creationTime, exitTime, kernelTime, userTime;
+	if( ::GetProcessTimes(_hProcess, &creationTime, &exitTime, &kernelTime, &userTime) == FALSE )
+	{
+		return NULL;
+	}
+
+	if( kernelTime.dwLowDateTime != 0 || kernelTime.dwHighDateTime != 0
+		|| userTime.dwLowDateTime != 0 || userTime.dwHighDateTime != 0 )
+	{
+		return NULL;
+	}
+
+	// ok, looks like it is created suspended. let's check if it has one and only suspended thread to be sure
+    HANDLE hThreadSnap = ::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0); 
+    if( hThreadSnap == INVALID_HANDLE_VALUE )
+    {
+        return NULL;
+    }
+
+    THREADENTRY32 te32;
+	te32.dwSize = sizeof(THREADENTRY32);
+    if( ::Thread32First(hThreadSnap, &te32) == FALSE ) 
+    {
+		::CloseHandle(hThreadSnap);
+        return NULL;
+    }
+
+	DWORD processId = ::GetProcessId(_hProcess);
+	std::vector<HANDLE> threads;
+	bool somethingWrong = false;
+    do 
+    { 
+        if( te32.th32OwnerProcessID == processId )
+        {
+            HANDLE hThread = ::OpenThread(THREAD_SUSPEND_RESUME | THREAD_SET_CONTEXT | THREAD_GET_CONTEXT, FALSE, te32.th32ThreadID);
+            if( hThread == NULL )
+            {
+				somethingWrong = true;
+				break;
+            }
+            threads.push_back(hThread);
+        }
+    } while( Thread32Next(hThreadSnap, &te32) );
+	::CloseHandle(hThreadSnap);
+
+	DWORD suspendCount = -1;
+	if( threads.size() == 1 )
+	{
+		suspendCount = ::SuspendThread(threads[0]);
+		::ResumeThread(threads[0]);
+	}
+
+	HANDLE mainThread = NULL;
+	bool suspended = (suspendCount > 0) && (somethingWrong == false);
+	if( suspended == false )
+	{
+		for( std::vector<HANDLE>::iterator it = threads.begin(), it_end = threads.end(); it != it_end; ++it )
+		{
+			::CloseHandle(*it);
+		}
+	}
+	else
+	{
+		mainThread = threads[0];
+	}
+
+	return mainThread;
+}
+
+static int InjectProcessLive( HANDLE _hProcess, const std::vector<wchar_t>& _libToInjectFullpath )
+{
     BOOL suspended = FALSE;
     BOOL attached = FALSE;
     HANDLE hThreadSnap = INVALID_HANDLE_VALUE; 
     THREADENTRY32 te32;
     std::vector<HANDLE> threads;
-    std::vector<wchar_t> libToInject;
-    std::vector<wchar_t> libToInjectFullpath;
     InjectionBufferInfo injectionBuffer = { NULL };
     CONTEXT threadContext = { CONTEXT_CONTROL, 0 };
     CONTEXT currentContext = { CONTEXT_CONTROL, 0 };
+	DWORD processId = ::GetProcessId(_hProcess);
+	int error = LIBINJECT_OK;
 
-    if( _libToInjectUtf8 == NULL )
-    {
-        error = LIBINJECT_INVALID_PARAM;
-        goto exit_label;
-    }
-
-    if( utf8_to_ucs2(_libToInjectUtf8, &libToInject) == false )
-    {
-        error = LIBINJECT_INVALID_PARAM;
-        goto exit_label;
-    }
-
-    DWORD fullnameLength = ::GetFullPathNameW(&(libToInject[0]), 0, NULL, NULL);
-    if( fullnameLength == 0 )
-    {
-        error = LIBINJECT_INVALID_PARAM;
-        goto exit_label;
-    }
-    libToInjectFullpath.resize(fullnameLength);
-    ::GetFullPathNameW(&(libToInject[0]), libToInjectFullpath.size(), &(libToInjectFullpath[0]), NULL);
-
-    attached = ::DebugActiveProcess(pid);
+    attached = ::DebugActiveProcess(processId);
     if( attached == FALSE )
     {
         error = LIBINJECT_ERROR;
@@ -196,7 +246,7 @@ int LIBINJECT_Inject( LIBINJECT_PROCESS _processHandle, const char* _libToInject
     }
 
     // break all the process threads
-    suspended = ::DebugBreakProcess(_processHandle);
+    suspended = ::DebugBreakProcess(_hProcess);
     if( suspended == FALSE )
     {
         error = LIBINJECT_ERROR;
@@ -204,7 +254,7 @@ int LIBINJECT_Inject( LIBINJECT_PROCESS _processHandle, const char* _libToInject
     }
 
     // Take a snapshot of all running threads  
-    hThreadSnap = ::CreateToolhelp32Snapshot( TH32CS_SNAPTHREAD, 0 ); 
+    hThreadSnap = ::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0); 
     if( hThreadSnap == INVALID_HANDLE_VALUE )
     {
         error = LIBINJECT_ERROR;
@@ -221,7 +271,7 @@ int LIBINJECT_Inject( LIBINJECT_PROCESS _processHandle, const char* _libToInject
     // suspend all process' threads
     do 
     { 
-        if( te32.th32OwnerProcessID == pid )
+        if( te32.th32OwnerProcessID == processId )
         {
             HANDLE hThread = ::OpenThread(THREAD_SUSPEND_RESUME | THREAD_SET_CONTEXT | THREAD_GET_CONTEXT, FALSE, te32.th32ThreadID);
             if( hThread == NULL )
@@ -241,7 +291,7 @@ int LIBINJECT_Inject( LIBINJECT_PROCESS _processHandle, const char* _libToInject
     ::CloseHandle(hThreadSnap);
     hThreadSnap = INVALID_HANDLE_VALUE;
 
-    if( ::DebugActiveProcessStop(pid) == FALSE )
+    if( ::DebugActiveProcessStop(processId) == FALSE )
 	{
 		error = LIBINJECT_ERROR;
 		goto exit_label;
@@ -254,7 +304,7 @@ int LIBINJECT_Inject( LIBINJECT_PROCESS _processHandle, const char* _libToInject
         goto exit_label;
     }
 
-    error = createInjectionBuffer(_processHandle, libToInjectFullpath, &injectionBuffer);
+    error = createInjectionBuffer(_hProcess, _libToInjectFullpath, &injectionBuffer);
     if( error != LIBINJECT_OK )
     {
         goto exit_label;
@@ -288,6 +338,7 @@ int LIBINJECT_Inject( LIBINJECT_PROCESS _processHandle, const char* _libToInject
 
     do
     {
+		::Sleep(0);
         if( ::GetThreadContext(hThread, &currentContext) == FALSE 
 			&& GetLastError() != ERROR_GEN_FAILURE )
         {
@@ -319,11 +370,11 @@ int LIBINJECT_Inject( LIBINJECT_PROCESS _processHandle, const char* _libToInject
 	::ResumeThread(hThread);
 
 exit_label:
-    releaseInjectionBuffer(_processHandle, injectionBuffer);
+    releaseInjectionBuffer(_hProcess, injectionBuffer);
 
     if( attached != FALSE )
     {
-        ::DebugActiveProcessStop(pid);
+        ::DebugActiveProcessStop(processId);
     }
 
     for( std::vector<HANDLE>::reverse_iterator it = threads.rbegin(), it_end = threads.rend(); it != it_end; ++it )
@@ -335,7 +386,143 @@ exit_label:
     return error;
 }
 
-int LIBINJECT_StartInjected( const char* _commandlineUtf8, const char* _workingDirectoryUtf8, const char* _libToInjectUtf8, LIBINJECT_PROCESS* _processHandle )
+static int InjectProcessCreatedSuspended( HANDLE _hProcess, HANDLE _hMainThread, const std::vector<wchar_t>& _libToInjectFullpath )
+{
+	CONTEXT threadContext = { CONTEXT_CONTROL | CONTEXT_INTEGER, 0 };
+    if( ::GetThreadContext(_hMainThread, &threadContext) == FALSE )
+    {
+        return LIBINJECT_ERROR;
+    }
+
+    InjectionBufferInfo injectionBuffer = { NULL };
+    if( createInjectionBuffer(_hProcess, _libToInjectFullpath, &injectionBuffer) != LIBINJECT_OK )
+    {
+        return LIBINJECT_ERROR;
+    }
+
+    DWORD originalEntryPoint = threadContext.Eax;
+    threadContext.Eax = (DWORD)injectionBuffer.codeBlock;
+    if( ::SetThreadContext(_hMainThread, &threadContext) == FALSE )
+    {
+        releaseInjectionBuffer(_hProcess, injectionBuffer);
+        return LIBINJECT_ERROR;
+    }
+
+    if( ::ResumeThread(_hMainThread) == (DWORD)-1 )
+    {
+        releaseInjectionBuffer(_hProcess, injectionBuffer);
+        return LIBINJECT_ERROR;
+    }
+
+    do
+    {
+		::Sleep(0);
+        if( ::GetThreadContext(_hMainThread, &threadContext) == FALSE 
+			&& GetLastError() != ERROR_GEN_FAILURE )
+        {
+	        releaseInjectionBuffer(_hProcess, injectionBuffer);
+			return LIBINJECT_ERROR;
+        }
+	}while( threadContext.Eip != ((DWORD)injectionBuffer.codeBlockBeginTrapInstructionAddress) );
+
+    if( ::SuspendThread(_hMainThread) == (DWORD)-1 )
+    {
+        releaseInjectionBuffer(_hProcess, injectionBuffer);
+        return LIBINJECT_ERROR;
+    }
+
+	DWORD originalEsp = threadContext.Esp;
+	DWORD originalEbp = threadContext.Ebp;
+	threadContext.Eip = (DWORD)injectionBuffer.codeBlockTrapBodyInstructionAddress;
+	threadContext.Ebp = (DWORD)injectionBuffer.dataBlockStackAddress;
+	threadContext.Esp = (DWORD)injectionBuffer.dataBlockStackAddress;
+
+    if( ::SetThreadContext(_hMainThread, &threadContext) == FALSE )
+    {
+        releaseInjectionBuffer(_hProcess, injectionBuffer);
+        return LIBINJECT_ERROR;
+    }
+    if( ::ResumeThread(_hMainThread) == (DWORD)-1 )
+    {
+        releaseInjectionBuffer(_hProcess, injectionBuffer);
+        return LIBINJECT_ERROR;
+    }
+
+    do
+    {
+		::Sleep(0);
+        if( ::GetThreadContext(_hMainThread, &threadContext) == FALSE 
+			&& GetLastError() != ERROR_GEN_FAILURE )
+        {
+	        releaseInjectionBuffer(_hProcess, injectionBuffer);
+			return LIBINJECT_ERROR;
+        }
+	}while( threadContext.Eip != ((DWORD)injectionBuffer.codeBlockEndTrapInstructionAddress) );
+
+    if( ::SuspendThread(_hMainThread) == (DWORD)-1 )
+    {
+        releaseInjectionBuffer(_hProcess, injectionBuffer);
+        return LIBINJECT_ERROR;
+    }
+
+    threadContext.Eip = originalEntryPoint;
+    threadContext.Esp = originalEsp;
+	threadContext.Ebp = originalEbp;
+    if( ::SetThreadContext(_hMainThread, &threadContext) == FALSE )
+    {
+        releaseInjectionBuffer(_hProcess, injectionBuffer);
+        return LIBINJECT_ERROR;
+    }
+
+    releaseInjectionBuffer(_hProcess, injectionBuffer);
+	return LIBINJECT_OK;
+}
+
+int LIBINJECT_Inject( LIBINJECT_PID _processId, const char* _libToInjectUtf8 )
+{
+    if( _libToInjectUtf8 == NULL )
+    {
+        return LIBINJECT_INVALID_PARAM;
+    }
+
+    std::vector<wchar_t> libToInject;
+    if( utf8_to_ucs2(_libToInjectUtf8, &libToInject) == false )
+    {
+        return LIBINJECT_INVALID_PARAM;
+    }
+
+    DWORD fullnameLength = ::GetFullPathNameW(&(libToInject[0]), 0, NULL, NULL);
+    if( fullnameLength == 0 )
+    {
+        return LIBINJECT_INVALID_PARAM;
+    }
+
+    std::vector<wchar_t> libToInjectFullpath(fullnameLength);
+    ::GetFullPathNameW(&(libToInject[0]), libToInjectFullpath.size(), &(libToInjectFullpath[0]), NULL);
+
+	HANDLE hProcess = ::OpenProcess(PROCESS_ALL_ACCESS, FALSE, _processId);
+	if( hProcess == NULL )
+	{
+		return LIBINJECT_INVALID_PARAM;
+	}
+
+	int error = LIBINJECT_OK;
+	HANDLE hMainThread = IsProcessCreatedSuspended(hProcess);
+	if( hMainThread != NULL )
+	{
+		error = InjectProcessCreatedSuspended(hProcess, hMainThread, libToInjectFullpath);
+		::CloseHandle(hMainThread);
+	}
+	else
+	{
+		error = InjectProcessLive(hProcess, libToInjectFullpath);
+	}
+
+	::CloseHandle(hProcess);
+	return error;
+}
+
+int LIBINJECT_StartInjected( const char* _commandlineUtf8, const char* _workingDirectoryUtf8, const char* _libToInjectUtf8, LIBINJECT_PID* _processId, LIBINJECT_TID* _threadId )
 {
     if( _commandlineUtf8 == NULL )
     {
@@ -378,9 +565,6 @@ int LIBINJECT_StartInjected( const char* _commandlineUtf8, const char* _workingD
     std::vector<wchar_t> libToInjectFullpath(fullnameLength);
     ::GetFullPathNameW(&(libToInject[0]), libToInjectFullpath.size(), &(libToInjectFullpath[0]), NULL);
 
-    //LPFN_ISWOW64PROCESS fnIsWow64Process = (LPFN_ISWOW64PROCESS)::GetProcAddress(::GetModuleHandleW(L"kernel32"), "IsWow64Process");
-
-    int error = LIBINJECT_OK;
     STARTUPINFOW startupInfo;
     std::memset(&startupInfo, 0, sizeof(STARTUPINFOW));
     startupInfo.cb = sizeof(STARTUPINFOW);
@@ -391,123 +575,31 @@ int LIBINJECT_StartInjected( const char* _commandlineUtf8, const char* _workingD
         return LIBINJECT_ERROR;
     }
 
-	CONTEXT threadContext = { CONTEXT_CONTROL | CONTEXT_INTEGER, 0 };
-    if( ::GetThreadContext(processInfo.hThread, &threadContext) == FALSE )
-    {
-        return LIBINJECT_ERROR;
-    }
+	int error = InjectProcessCreatedSuspended(processInfo.hProcess, processInfo.hThread, libToInjectFullpath);
 
-    InjectionBufferInfo injectionBuffer = { NULL };
-    error = createInjectionBuffer(processInfo.hProcess, libToInjectFullpath, &injectionBuffer);
-    if( error != LIBINJECT_OK )
-    {
-        goto exit_label;
-    }
+	if( ::ResumeThread(processInfo.hThread) == (DWORD)-1 )
+	{
+		error = LIBINJECT_ERROR;
+	}
 
-    DWORD originalEntryPoint = threadContext.Eax;
-    threadContext.Eax = (DWORD)injectionBuffer.codeBlock;
-    if( ::SetThreadContext(processInfo.hThread, &threadContext) == FALSE )
-    {
-        error = LIBINJECT_ERROR;
-        goto exit_label;
-    }
+	if( error == LIBINJECT_OK )
+	{
+		if( _processId != NULL )
+		{
+			*_processId = processInfo.dwProcessId;
+		}
 
-    if( ::ResumeThread(processInfo.hThread) == (DWORD)-1 )
-    {
-        error = LIBINJECT_ERROR;
-        goto exit_label;
-    }
-
-    do
-    {
-        if( ::GetThreadContext(processInfo.hThread, &threadContext) == FALSE 
-			&& GetLastError() != ERROR_GEN_FAILURE )
-        {
-            error = LIBINJECT_ERROR;
-            goto exit_label;
-        }
-	}while( threadContext.Eip != ((DWORD)injectionBuffer.codeBlockBeginTrapInstructionAddress) );
-
-    if( ::SuspendThread(processInfo.hThread) == (DWORD)-1 )
-    {
-        error = LIBINJECT_ERROR;
-        goto exit_label;
-    }
-
-	DWORD originalEsp = threadContext.Esp;
-	DWORD originalEbp = threadContext.Ebp;
-	threadContext.Eip = (DWORD)injectionBuffer.codeBlockTrapBodyInstructionAddress;
-	threadContext.Ebp = (DWORD)injectionBuffer.dataBlockStackAddress;
-	threadContext.Esp = (DWORD)injectionBuffer.dataBlockStackAddress;
-
-    if( ::SetThreadContext(processInfo.hThread, &threadContext) == FALSE )
-    {
-        error = LIBINJECT_ERROR;
-        goto exit_label;
-    }
-    if( ::ResumeThread(processInfo.hThread) == (DWORD)-1 )
-    {
-        error = LIBINJECT_ERROR;
-        goto exit_label;
-    }
-
-    do
-    {
-        if( ::GetThreadContext(processInfo.hThread, &threadContext) == FALSE 
-			&& GetLastError() != ERROR_GEN_FAILURE )
-        {
-            error = LIBINJECT_ERROR;
-            goto exit_label;
-        }
-	}while( threadContext.Eip != ((DWORD)injectionBuffer.codeBlockEndTrapInstructionAddress) );
-
-    if( ::SuspendThread(processInfo.hThread) == (DWORD)-1 )
-    {
-        error = LIBINJECT_ERROR;
-        goto exit_label;
-    }
-
-    threadContext.Eip = originalEntryPoint;
-    threadContext.Esp = originalEsp;
-	threadContext.Ebp = originalEbp;
-    if( ::SetThreadContext(processInfo.hThread, &threadContext) == FALSE )
-    {
-        error = LIBINJECT_ERROR;
-        goto exit_label;
-    }
-    if( ::ResumeThread(processInfo.hThread) == (DWORD)-1 )
-    {
-        error = LIBINJECT_ERROR;
-        goto exit_label;
-    }
-
-exit_label:
-    if( processInfo.hProcess != NULL )
-    {
-        releaseInjectionBuffer(processInfo.hProcess, injectionBuffer);
-    }
-
-    if( processInfo.hThread != NULL )
-    {
-        ::CloseHandle(processInfo.hThread);
-    }
-
-    if( error != LIBINJECT_OK && processInfo.hProcess != NULL )
-    {
+		if( _threadId != NULL )
+		{
+			*_threadId = processInfo.dwThreadId;
+		}
+	}
+	else
+	{
         ::TerminateProcess(processInfo.hProcess, 0);
-        ::CloseHandle(processInfo.hProcess);
-    }
-    else if( error == LIBINJECT_OK )
-    {
-        if( _processHandle != NULL )
-        {
-            *_processHandle = processInfo.hProcess;
-        }
-        else
-        {
-            ::CloseHandle(processInfo.hProcess);
-        }
-    }
-    
+	}
+
+    ::CloseHandle(processInfo.hThread);
+    ::CloseHandle(processInfo.hProcess);
     return error;
 }
