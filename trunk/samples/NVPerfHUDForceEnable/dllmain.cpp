@@ -24,14 +24,19 @@ static BOOL WINAPI HookedCreateProcessA(
     __out       LPPROCESS_INFORMATION lpProcessInformation
     )
 {
+	bool hasSuspendedFlag = ((dwCreationFlags & CREATE_SUSPENDED) != 0);
     dwCreationFlags |= CREATE_SUSPENDED;
     BOOL result = OrigCreateProcessA(lpApplicationName, lpCommandLine, lpProcessAttributes, lpThreadAttributes, bInheritHandles
                                     , dwCreationFlags, lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
     if( result != FALSE )
     {
-        LIBINJECT_Inject(lpProcessInformation->hProcess, g_moduleFilenameUtf8.c_str());
-        ::ResumeThread(lpProcessInformation->hThread);
+        LIBINJECT_Inject(lpProcessInformation->dwProcessId, g_moduleFilenameUtf8.c_str());
+		if( hasSuspendedFlag == false )
+		{        
+			::ResumeThread(lpProcessInformation->hThread);
+		}
     }
+
     return result;
 }
 
@@ -49,14 +54,19 @@ static BOOL WINAPI HookedCreateProcessW(
     __out       LPPROCESS_INFORMATION lpProcessInformation
     )
 {
+	bool hasSuspendedFlag = ((dwCreationFlags & CREATE_SUSPENDED) != 0);
     dwCreationFlags |= CREATE_SUSPENDED;
     BOOL result = OrigCreateProcessW(lpApplicationName, lpCommandLine, lpProcessAttributes, lpThreadAttributes, bInheritHandles
                                     , dwCreationFlags, lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
     if( result != FALSE )
     {
-        LIBINJECT_Inject(lpProcessInformation->hProcess, g_moduleFilenameUtf8.c_str());
-        ::ResumeThread(lpProcessInformation->hThread);
+        LIBINJECT_Inject(lpProcessInformation->dwProcessId, g_moduleFilenameUtf8.c_str());
+		if( hasSuspendedFlag == false )
+		{        
+			::ResumeThread(lpProcessInformation->hThread);
+		}
     }
+
     return result;
 }
 

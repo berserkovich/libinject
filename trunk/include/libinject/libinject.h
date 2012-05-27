@@ -8,9 +8,8 @@ extern "C" {
 
 #ifdef _WIN32
 
-#   define WIN32_LEAN_AND_MEAN
-#   include <Windows.h>
-typedef HANDLE LIBINJECT_PROCESS;
+typedef unsigned long LIBINJECT_PID;
+typedef unsigned long LIBINJECT_TID;
 
 #else
 #   error "Unknown platform"
@@ -35,9 +34,9 @@ typedef HANDLE LIBINJECT_PROCESS;
 #define LIBINJECT_ERROR             2
 //#define 
 
-extern LIBINJECT_EXPORT int LIBINJECT_Inject( LIBINJECT_PROCESS _processHandle, const char* _libToInjectUtf8 );
+extern LIBINJECT_EXPORT int LIBINJECT_Inject( LIBINJECT_PID _processId, const char* _libToInjectUtf8 );
 
-extern LIBINJECT_EXPORT int LIBINJECT_StartInjected( const char* _commandlineUtf8, const char* _workingDirectoryUtf8, const char* _libToInjectUtf8, LIBINJECT_PROCESS* _processHandle );
+extern LIBINJECT_EXPORT int LIBINJECT_StartInjected( const char* _commandlineUtf8, const char* _workingDirectoryUtf8, const char* _libToInjectUtf8, LIBINJECT_PID* _processId, LIBINJECT_TID* _threadId );
 
 
 #ifdef __cplusplus

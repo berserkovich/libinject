@@ -6,13 +6,6 @@
 
 #include "libinject/libinject.h"
 
-#ifdef _WIN32
-    LIBINJECT_PROCESS PidToHandle( long _pid )
-    {
-        return ::OpenProcess(PROCESS_ALL_ACCESS, FALSE, _pid);
-    }
-#endif
-
 bool check_result( int _result )
 {
     if( _result == LIBINJECT_INVALID_PARAM )
@@ -39,14 +32,13 @@ int main( int _argc, char* _argv[] )
     {
         if( std::strcmp(_argv[1], "-pid") == 0 )
         {
-            long pid = std::atol(_argv[2]);
-            LIBINJECT_PROCESS hProcess = PidToHandle(pid);
-            int result = LIBINJECT_Inject(hProcess, _argv[3]);
+            LIBINJECT_PID pid = static_cast<LIBINJECT_PID>(std::atol(_argv[2]));
+            int result = LIBINJECT_Inject(pid, _argv[3]);
             return check_result(result) ? EXIT_SUCCESS : EXIT_FAILURE;
         }
         else
         {
-            int result = LIBINJECT_StartInjected(_argv[1], NULL, _argv[2], NULL);
+            int result = LIBINJECT_StartInjected(_argv[1], NULL, _argv[2], NULL, NULL);
             return check_result(result) ? EXIT_SUCCESS : EXIT_FAILURE;
         }
     }
