@@ -1,14 +1,31 @@
+#define CINTERFACE
 
 #include "libinject/libinject.h"
 #include "MinHook.h"
 
 #include <Shellapi.h>
 
+#include <algorithm>
 #include <cassert>
 #include <string>
 #include <vector>
 
+#include <d3d9.h>
+
 static std::string g_moduleFilenameUtf8;
+
+static HANDLE hInjectedProcessMainThread = NULL;
+static DWORD injectedProcessId = 0;
+
+static DWORD (WINAPI* OrigResumeThread)(HANDLE);
+static DWORD WINAPI HookedResumeThread( HANDLE hThread )
+{
+    if( hThread == hInjectedProcessMainThread )
+    {
+        LIBINJECT_Inject(injectedProcessId, g_moduleFilenameUtf8.c_str());
+    }
+    return OrigResumeThread(hThread);
+}
 
 static BOOL (WINAPI *OrigCreateProcessA)(LPCSTR, LPSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES, BOOL, DWORD, LPVOID, LPCWSTR, LPSTARTUPINFOW, LPPROCESS_INFORMATION) = NULL;
 static BOOL WINAPI HookedCreateProcessA(
@@ -28,13 +45,15 @@ static BOOL WINAPI HookedCreateProcessA(
     dwCreationFlags |= CREATE_SUSPENDED;
     BOOL result = OrigCreateProcessA(lpApplicationName, lpCommandLine, lpProcessAttributes, lpThreadAttributes, bInheritHandles
                                     , dwCreationFlags, lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
-    if( result != FALSE )
+    if( result != FALSE
+        && hasSuspendedFlag )
     {
-        LIBINJECT_Inject(lpProcessInformation->dwProcessId, g_moduleFilenameUtf8.c_str());
-		if( hasSuspendedFlag == false )
-		{        
-			::ResumeThread(lpProcessInformation->hThread);
-		}
+        // we can't inject now, because NVPerfHUD uses MS Detours to inject its hooks
+        // and MS Detours patches dll import table to load new dll upon process initialization
+        // if we inject now injection will trigger process initialization and dll import table patch will come too late
+        // so we just remember what process is going to start and inject it on ResumeThread after MS Detours did its job
+        injectedProcessId = lpProcessInformation->dwProcessId;
+        hInjectedProcessMainThread = lpProcessInformation->hThread;
     }
 
     return result;
@@ -58,40 +77,97 @@ static BOOL WINAPI HookedCreateProcessW(
     dwCreationFlags |= CREATE_SUSPENDED;
     BOOL result = OrigCreateProcessW(lpApplicationName, lpCommandLine, lpProcessAttributes, lpThreadAttributes, bInheritHandles
                                     , dwCreationFlags, lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
-    if( result != FALSE )
+    if( result != FALSE
+        && hasSuspendedFlag )
     {
-        LIBINJECT_Inject(lpProcessInformation->dwProcessId, g_moduleFilenameUtf8.c_str());
-		if( hasSuspendedFlag == false )
-		{        
-			::ResumeThread(lpProcessInformation->hThread);
-		}
+        injectedProcessId = lpProcessInformation->dwProcessId;
+        hInjectedProcessMainThread = lpProcessInformation->hThread;
     }
 
     return result;
 }
 
+static HRESULT (WINAPI* OrigDirect3DCreateDevice)(IDirect3D9*, UINT, D3DDEVTYPE, HWND, DWORD, D3DPRESENT_PARAMETERS*, IDirect3DDevice9**) = NULL;
+static HRESULT WINAPI HookedDirect3DCreateDevice(IDirect3D9* This, UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow, DWORD BehaviorFlags, D3DPRESENT_PARAMETERS* pPresentationParameters, IDirect3DDevice9** ppReturnedDeviceInterface)
+{
+    UINT adapterOverride = Adapter;
+    D3DDEVTYPE deviceTypeOverride = DeviceType;
+    UINT adapterCount = This->lpVtbl->GetAdapterCount(This);
+    for( UINT adapterIndex = 0; adapterIndex < adapterCount; ++adapterIndex) 
+	{
+	    D3DADAPTER_IDENTIFIER9 adapterIdentifier;
+		HRESULT hResult = This->lpVtbl->GetAdapterIdentifier(This, adapterIndex, 0, &adapterIdentifier);
+	    if( std::strstr(adapterIdentifier.Description, "PerfHUD") != 0)
+	    {
+	        adapterOverride = adapterIndex;
+	        deviceTypeOverride = D3DDEVTYPE_REF;
+	        break;
+	    }
+    }
+
+    return OrigDirect3DCreateDevice(This, adapterOverride, deviceTypeOverride, hFocusWindow, BehaviorFlags, pPresentationParameters, ppReturnedDeviceInterface);
+}
+
+static IDirect3D9* (WINAPI *OrigDirect3DCreate9)(UINT) = NULL;
+static IDirect3D9* WINAPI HookedDirect3DCreate9( UINT SDKVersion )
+{
+    IDirect3D9* pD3D9 = OrigDirect3DCreate9(SDKVersion);
+
+    if( pD3D9 != NULL )
+    {
+        MH_CreateHook(pD3D9->lpVtbl->CreateDevice, &HookedDirect3DCreateDevice, reinterpret_cast<void**>(&OrigDirect3DCreateDevice));
+        MH_EnableHook(pD3D9->lpVtbl->CreateDevice);
+    }
+    return pD3D9;
+}
+
+static void HookD3D9()
+{
+    HMODULE hD3D9 = ::LoadLibraryA("d3d9.dll");
+    if( hD3D9 == NULL )
+    {
+        return;
+    }
+
+    FARPROC pDirect3DCreate9 = ::GetProcAddress(hD3D9, "Direct3DCreate9");
+    if( pDirect3DCreate9 == NULL )
+    {
+        return;
+    }
+
+    if( MH_CreateHook(pDirect3DCreate9, &HookedDirect3DCreate9, reinterpret_cast<void**>(&OrigDirect3DCreate9)) != MH_OK )
+    {
+        return;
+    }
+
+    if( MH_EnableHook(pDirect3DCreate9) != MH_OK )
+    {
+        return;
+    }
+}
+
 static std::wstring GetModulePath( HMODULE _hModule )
 {
-  std::vector<wchar_t> modulePath(MAX_PATH);
+    std::vector<wchar_t> modulePath(MAX_PATH);
 
-  // Try to get the executable path with a buffer of MAX_PATH characters.
-  DWORD result = ::GetModuleFileNameW(_hModule, &(modulePath[0]), static_cast<DWORD>(modulePath.size()));
+    // Try to get the executable path with a buffer of MAX_PATH characters.
+    DWORD result = ::GetModuleFileNameW(_hModule, &(modulePath[0]), static_cast<DWORD>(modulePath.size()));
 
-  // As long the function returns the buffer size, it is indicating that the buffer
-  // was too small. Keep enlarging the buffer by a factor of 2 until it fits.
-  while(result == modulePath.size()) 
-  {
-    modulePath.resize(modulePath.size() * 2);
-    result = ::GetModuleFileNameW(_hModule, &(modulePath[0]), static_cast<DWORD>(modulePath.size()));
-  }
+    // As long the function returns the buffer size, it is indicating that the buffer
+    // was too small. Keep enlarging the buffer by a factor of 2 until it fits.
+    while(result == modulePath.size()) 
+    {
+        modulePath.resize(modulePath.size() * 2);
+        result = ::GetModuleFileNameW(_hModule, &(modulePath[0]), static_cast<DWORD>(modulePath.size()));
+    }
 
-  if( result == 0 )
-  {
-      return std::wstring();
-  }
+    if( result == 0 )
+    {
+        return std::wstring();
+    }
 
-  // We've got the path, construct a standard string from it
-  return std::wstring(modulePath.begin(), modulePath.begin() + result);
+    // We've got the path, construct a standard string from it
+    return std::wstring(modulePath.begin(), modulePath.begin() + result);
 }
 
 void WstrToUtf8( const std::wstring& _wstr, std::string* _utf8 )
@@ -111,30 +187,42 @@ BOOL WINAPI DllMain( HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved )
 {
     if( fdwReason == DLL_PROCESS_ATTACH )
     {
-		if( MH_Initialize() != MH_OK )
+        if( MH_Initialize() != MH_OK )
         {
             return FALSE;
         }
 
-	    if( MH_CreateHook(&CreateProcessA, &HookedCreateProcessA, reinterpret_cast<void**>(&OrigCreateProcessA)) != MH_OK )
-	    {
-		    return FALSE;
-	    }
+        if( MH_CreateHook(&CreateProcessA, &HookedCreateProcessA, reinterpret_cast<void**>(&OrigCreateProcessA)) != MH_OK )
+        {
+            return FALSE;
+        }
 
-	    if( MH_EnableHook(&CreateProcessA) != MH_OK )
-	    {
-		    return FALSE;
-	    }
+        if( MH_EnableHook(&CreateProcessA) != MH_OK )
+        {
+            return FALSE;
+        }
 
-	    if( MH_CreateHook(&CreateProcessW, &HookedCreateProcessW, reinterpret_cast<void**>(&OrigCreateProcessW)) != MH_OK )
-	    {
-		    return FALSE;
-	    }
+        if( MH_CreateHook(&CreateProcessW, &HookedCreateProcessW, reinterpret_cast<void**>(&OrigCreateProcessW)) != MH_OK )
+        {
+            return FALSE;
+        }
 
-	    if( MH_EnableHook(&CreateProcessW) != MH_OK )
-	    {
-		    return FALSE;
-	    }
+        if( MH_EnableHook(&CreateProcessW) != MH_OK )
+        {
+            return FALSE;
+        }
+
+        if( MH_CreateHook(&ResumeThread, &HookedResumeThread, reinterpret_cast<void**>(&OrigResumeThread)) != MH_OK )
+        {
+            return FALSE;
+        }
+
+        if( MH_EnableHook(&ResumeThread) != MH_OK )
+        {
+            return FALSE;
+        }
+
+        HookD3D9();
 
         std::wstring moduleFilename = GetModulePath(hinstDLL);
         WstrToUtf8(moduleFilename, &g_moduleFilenameUtf8);

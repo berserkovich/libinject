@@ -38,13 +38,13 @@ int main( int _argc, char* _argv[] )
         }
         else
         {
-            int result = LIBINJECT_StartInjected(_argv[1], NULL, _argv[2], NULL, NULL);
+            int result = LIBINJECT_StartInjected(_argv[2], NULL, _argv[1], NULL, NULL);
             return check_result(result) ? EXIT_SUCCESS : EXIT_FAILURE;
         }
     }
     else
     {
-        std::printf("inject <commandline> <libToInject>\n"
+        std::printf("inject <libToInject> <commandline>\n"
                     "inject -pid <pid> <libToInject>\n");
     }
     return EXIT_SUCCESS;
