@@ -11,8 +11,6 @@
 #include <Windows.h>
 #include <TlHelp32.h>
 
-typedef BOOL (WINAPI *LPFN_ISWOW64PROCESS) (HANDLE, PBOOL);
-
 struct InjectionBufferInfo
 {
     unsigned char* codeBlock;
@@ -359,6 +357,15 @@ static int InjectProcessLive( HANDLE _hProcess, const std::vector<wchar_t>& _lib
         goto exit_label;
     }
 
+	DWORD lastError = 0;
+	DWORD bytesRead = 0;
+	if( ::ReadProcessMemory(_hProcess, injectionBuffer.dataBlock, &lastError, sizeof(DWORD), &bytesRead) == FALSE
+		|| bytesRead != sizeof(DWORD) )
+	{
+		error = LIBINJECT_ERROR;
+		goto exit_label;
+	}
+
     threadContext.Eip = originalEntryPoint;
 	threadContext.Ebp = originalEbp;
 	threadContext.Esp = originalEsp;
@@ -369,6 +376,10 @@ static int InjectProcessLive( HANDLE _hProcess, const std::vector<wchar_t>& _lib
     }
 	::ResumeThread(hThread);
 
+	if( lastError != ERROR_SUCCESS )
+	{
+		error = LIBINJECT_ERROR;
+	}
 exit_label:
     releaseInjectionBuffer(_hProcess, injectionBuffer);
 
@@ -465,6 +476,14 @@ static int InjectProcessCreatedSuspended( HANDLE _hProcess, HANDLE _hMainThread,
         return LIBINJECT_ERROR;
     }
 
+	DWORD lastError = 0;
+	DWORD bytesRead = 0;
+	if( ::ReadProcessMemory(_hProcess, injectionBuffer.dataBlock, &lastError, sizeof(DWORD), &bytesRead) == FALSE
+		|| bytesRead != sizeof(DWORD) )
+	{
+		releaseInjectionBuffer(_hProcess, injectionBuffer);
+		return LIBINJECT_ERROR;
+	}
     threadContext.Eip = originalEntryPoint;
     threadContext.Esp = originalEsp;
 	threadContext.Ebp = originalEbp;
@@ -475,7 +494,7 @@ static int InjectProcessCreatedSuspended( HANDLE _hProcess, HANDLE _hMainThread,
     }
 
     releaseInjectionBuffer(_hProcess, injectionBuffer);
-	return LIBINJECT_OK;
+	return (lastError == 0) ? LIBINJECT_OK : LIBINJECT_ERROR;
 }
 
 int LIBINJECT_Inject( LIBINJECT_PID _processId, const char* _libToInjectUtf8 )
