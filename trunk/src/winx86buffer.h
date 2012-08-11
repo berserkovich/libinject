@@ -1,8 +1,6 @@
 
 static const unsigned char x86TemplateBuffer[] = 
 { 
-    0xEB, 0xFE,                         // jmp eip                          ; infinite loop for signaling of begining of routine
-
     0x60,                               // pushad                           ; save all registers 
     0x9C,                               // pushfd                           ; save flags
 
