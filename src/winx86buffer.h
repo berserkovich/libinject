@@ -1,9 +1,6 @@
 
 static const unsigned char x86TemplateBuffer[] = 
 { 
-    0x60,                               // pushad                           ; save all registers 
-    0x9C,                               // pushfd                           ; save flags
-
     0x33, 0xC0,                         // xor eax, eax                     ; clear eax
     0x3C, 0x01,                         // cmp al, 1                        ; change to 0 for debugging
     0x75, 0x02,                         // jne 2                            ; jump over next instruction
@@ -109,8 +106,6 @@ static const unsigned char x86TemplateBuffer[] =
     0xFF, 0xD0,                         // call eax                         ; Call GetLastError
 	0x89, 0x45, 0x00,					// mov [ebp], eax					; save last error to our variable
 
-    0x9D,                               // popfd                            ; pop flags
-    0x61,                               // popad                            ; pop registers
     0xEB, 0xFE,                         // jmp eip                          ; infinite loop for signaling end of routine
     
 };
