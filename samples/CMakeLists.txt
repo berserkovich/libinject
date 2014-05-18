@@ -8,5 +8,5 @@ if( WIN32 )
   include_directories(libMinHook)
 endif()
 
-add_library(NVPerfHUDForceEnable SHARED NVPerfHUDForceEnable/dllmain.cpp)
-target_link_libraries(NVPerfHUDForceEnable minhook libinject)
+add_subdirectory(NVPerfHUDForceEnable)
+
