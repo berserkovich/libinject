@@ -4,6 +4,8 @@ project(libinject)
 option(LIBINJECT_SHARED "build dll/so" OFF)
 option(LIBINJECT_BUILD_SAMPLES "build samples" ON)
 
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
 set(libinject_src
 include/libinject/libinject.h
 )
@@ -17,8 +19,8 @@ endif()
 
 set( LIBINJECT_LIB_MODE )
 if( LIBINJECT_SHARED )
-	add_definitions(-DLIBINJECT_SHARED_BUILD)
-	set( LIBINJECT_LIB_MODE SHARED )
+    add_definitions(-DLIBINJECT_SHARED_BUILD)
+    set( LIBINJECT_LIB_MODE SHARED )
 endif()
 
 include_directories(include)

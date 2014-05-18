@@ -110,15 +110,15 @@ namespace
         D3DDEVTYPE deviceTypeOverride = DeviceType;
         UINT adapterCount = This->lpVtbl->GetAdapterCount(This);
         for( UINT adapterIndex = 0; adapterIndex < adapterCount; ++adapterIndex) 
-	    {
-	        D3DADAPTER_IDENTIFIER9 adapterIdentifier;
-		    HRESULT hResult = This->lpVtbl->GetAdapterIdentifier(This, adapterIndex, 0, &adapterIdentifier);
-	        if( std::strstr(adapterIdentifier.Description, "PerfHUD") != 0)
-	        {
-	            adapterOverride = adapterIndex;
-	            deviceTypeOverride = D3DDEVTYPE_REF;
-	            break;
-	        }
+        {
+            D3DADAPTER_IDENTIFIER9 adapterIdentifier;
+            HRESULT hResult = This->lpVtbl->GetAdapterIdentifier(This, adapterIndex, 0, &adapterIdentifier);
+            if( std::strstr(adapterIdentifier.Description, "PerfHUD") != 0)
+            {
+                adapterOverride = adapterIndex;
+                deviceTypeOverride = D3DDEVTYPE_REF;
+                break;
+            }
         }
 
         return OrigDirect3DCreateDevice(This, adapterOverride, deviceTypeOverride, hFocusWindow, BehaviorFlags, pPresentationParameters, ppReturnedDeviceInterface);
