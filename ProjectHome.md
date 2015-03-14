@@ -1,0 +1,1 @@
+libinject allows to inject your code (DLL/so) into other process
